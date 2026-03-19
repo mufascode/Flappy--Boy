@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flappy Boy</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #1a0a2e;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    font-family: 'Press Start 2P', monospace;
+    overflow: hidden;
+  }
+
+  .stars {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .star {
+    position: absolute;
+    background: white;
+    border-radius: 50%;
+    animation: twinkle var(--d) infinite alternate;
+  }
+
+  @keyframes twinkle {
+    from { opacity: 0.1; }
+    to { opacity: 0.9; }
+  }
+
+  #gameContainer {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+
+  h1 {
+    font-size: 28px;
+    color: #ffe066;
+    text-shadow: 0 0 20px #ff9500, 3px 3px 0 #b36b00;
+    letter-spacing: 3px;
+  }
+
+  canvas {
+    display: block;
+    border: 4px solid #ffe066;
+    border-radius: 6px;
+    box-shadow: 0 0 40px #ff950088, 0 0 80px #ff950033;
+    image-rendering: pixelated;
+    cursor: pointer;
+  }
+
+  #ui {
+    display: flex;
+    gap: 40px;
+    color: #ffe066;
+    font-size: 11px;
+  }
+
+  #ui span { text-shadow: 0 0 10px #ff9500; }
+
+  #hint {
+    color: #aaa;
+    font-size: 8px;
+    letter-spacing: 1px;
+    animation: pulse 1.5s infinite alternate;
+  }
+
+  @keyframes pulse {
+    from { opacity: 0.4; }
+    to { opacity: 1; }
+  }
+</style>
+</head>
+<body>
+
+<div class="stars" id="stars"></div>
+
+<div id="gameContainer">
+  <h1>⚡ FLAPPY BOY ⚡</h1>
+  <canvas id="c" width="400" height="550"></canvas>
+  <div id="ui">
+    <span>SCORE: <span id="scoreDisplay">0</span></span>
+    <span>BEST: <span id="bestDisplay">0</span></span>
+  </div>
+  <div id="hint">CLICK / SPACE / TAP TO JUMP</div>
+</div>
+
+<script>
+// Stars background
+const starsEl = document.getElementById('stars');
+for (let i = 0; i < 120; i++) {
+  const s = document.createElement('div');
+  s.className = 'star';
+  const size = Math.random() * 2.5 + 0.5;
+  s.style.cssText = `width:${size}px;height:${size}px;top:${Math.random()*100}%;left:${Math.random()*100}%;--d:${(Math.random()*2+1).toFixed(1)}s`;
+  starsEl.appendChild(s);
+}
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// Game state
+let state = 'idle'; // idle | playing | dead
+let score = 0, best = 0;
+let raf;
+
+// Boy
+const boy = {
+  x: 90, y: H/2, vy: 0,
+  w: 32, h: 40,
+  rotation: 0,
+  jumpStr: -8.5,
+  gravity: 0.45,
+  jump() {
+    this.vy = this.jumpStr;
+  }
+};
+
+// Pipes
+const PIPE_W = 52;
+const PIPE_GAP = 150;
+const PIPE_SPEED = 2.8;
+let pipes = [];
+let frameCount = 0;
+let particles = [];
+
+// Colors
+const SKY_TOP = '#0d0428';
+const SKY_BOT = '#1a1050';
+const GROUND_COLOR = '#2a1a5e';
+const PIPE_COLOR = '#22c55e';
+const PIPE_DARK = '#15803d';
+const PIPE_LIGHT = '#4ade80';
+
+function spawnPipe() {
+  const minY = 80, maxY = H - 80 - PIPE_GAP - 30;
+  const gapY = Math.random() * (maxY - minY) + minY;
+  pipes.push({ x: W + 10, gapY, passed: false });
+}
+
+function addParticles(x, y, color) {
+  for (let i = 0; i < 12; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = Math.random() * 4 + 1;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      color,
+      size: Math.random() * 5 + 2
+    });
+  }
+}
+
+function resetGame() {
+  boy.y = H / 2;
+  boy.vy = 0;
+  boy.rotation = 0;
+  pipes = [];
+  frameCount = 0;
+  score = 0;
+  particles = [];
+  document.getElementById('scoreDisplay').textContent = 0;
+}
+
+function drawSky() {
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, SKY_TOP);
+  grad.addColorStop(1, SKY_BOT);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawClouds(t) {
+  ctx.fillStyle = 'rgba(255,255,255,0.04)';
+  for (let i = 0; i < 3; i++) {
+    const cx = ((t * 0.3 + i * 140) % (W + 120)) - 60;
+    const cy = 80 + i * 70;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, 60, 22, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(cx+25, cy-10, 38, 18, 0, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+function drawGround() {
+  // Ground base
+  ctx.fillStyle = '#1e0f44';
+  ctx.fillRect(0, H - 30, W, 30);
+  // Grass
+  ctx.fillStyle = '#2d1b6e';
+  ctx.fillRect(0, H - 32, W, 6);
+  // Stripe pattern
+  ctx.fillStyle = '#3b2280';
+  for (let x = 0; x < W; x += 24) {
+    ctx.fillRect(x, H - 32, 12, 6);
+  }
+}
+
+function drawPipe(pipe) {
+  const topH = pipe.gapY;
+  const botY = pipe.gapY + PIPE_GAP;
+  const botH = H - 30 - botY;
+
+  const drawOnePipe = (px, py, pw, ph, flip) => {
+    if (ph <= 0) return;
+
+    // Body gradient
+    const grad = ctx.createLinearGradient(px, 0, px + pw, 0);
+    grad.addColorStop(0, PIPE_DARK);
+    grad.addColorStop(0.3, PIPE_COLOR);
+    grad.addColorStop(0.7, PIPE_COLOR);
+    grad.addColorStop(1, PIPE_DARK);
+    ctx.fillStyle = grad;
+    ctx.fillRect(px + 5, py, pw - 10, ph);
+
+    // Cap
+    const capH = 22;
+    const capY = flip ? py : py + ph - capH;
+    const capGrad = ctx.createLinearGradient(px, 0, px + pw, 0);
+    capGrad.addColorStop(0, PIPE_DARK);
+    capGrad.addColorStop(0.25, PIPE_LIGHT);
+    capGrad.addColorStop(0.75, PIPE_COLOR);
+    capGrad.addColorStop(1, PIPE_DARK);
+    ctx.fillStyle = capGrad;
+    ctx.beginPath();
+    ctx.roundRect(px, capY, pw, capH, flip ? [0, 0, 6, 6] : [6, 6, 0, 0]);
+    ctx.fill();
+
+    // Shine
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(px + 10, py, 8, ph);
+  };
+
+  drawOnePipe(pipe.x, 0, PIPE_W, topH, true);
+  drawOnePipe(pipe.x, botY, PIPE_W, botH, false);
+}
+
+function drawBoy(bx, by, rot) {
+  ctx.save();
+  ctx.translate(bx + boy.w/2, by + boy.h/2);
+  ctx.rotate(rot);
+
+  const hw = boy.w/2, hh = boy.h/2;
+
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  ctx.beginPath();
+  ctx.ellipse(2, hh + 3, hw - 2, 5, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // Legs (pants)
+  ctx.fillStyle = '#3b4fd1';
+  ctx.fillRect(-hw + 4, hh - 14, 10, 16); // left leg
+  ctx.fillRect(-hw + 17, hh - 14, 10, 16); // right leg
+
+  // Shoes
+  ctx.fillStyle = '#1a1a2e';
+  ctx.beginPath();
+  ctx.roundRect(-hw + 2, hh, 13, 7, [2, 2, 5, 5]);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.roundRect(-hw + 16, hh, 13, 7, [2, 2, 5, 5]);
+  ctx.fill();
+
+  // Body (shirt)
+  ctx.fillStyle = '#e74c3c';
+  ctx.beginPath();
+  ctx.roundRect(-hw + 2, -hh + 14, boy.w - 4, hh + 2, [4, 4, 2, 2]);
+  ctx.fill();
+
+  // Shirt stripe
+  ctx.fillStyle = '#c0392b';
+  ctx.fillRect(-hw + 2, -hh + 22, boy.w - 4, 4);
+
+  // Arms (animated with jump)
+  const armAngle = Math.sin(Date.now() * 0.01) * 0.3 + (boy.vy < 0 ? -0.5 : 0.3);
+  // Left arm
+  ctx.save();
+  ctx.translate(-hw + 2, -hh + 18);
+  ctx.rotate(armAngle + 0.4);
+  ctx.fillStyle = '#e74c3c';
+  ctx.fillRect(-3, 0, 7, 14);
+  ctx.fillStyle = '#f5cba7';
+  ctx.beginPath();
+  ctx.arc(0, 14, 5, 0, Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+
+  // Right arm
+  ctx.save();
+  ctx.translate(hw - 2, -hh + 18);
+  ctx.rotate(-armAngle - 0.4);
+  ctx.fillStyle = '#e74c3c';
+  ctx.fillRect(-4, 0, 7, 14);
+  ctx.fillStyle = '#f5cba7';
+  ctx.beginPath();
+  ctx.arc(0, 14, 5, 0, Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+
+  // Head
+  ctx.fillStyle = '#f5cba7';
+  ctx.beginPath();
+  ctx.roundRect(-hw + 5, -hh, 22, 20, 6);
+  ctx.fill();
+
+  // Hair
+  ctx.fillStyle = '#4a2800';
+  ctx.beginPath();
+  ctx.roundRect(-hw + 4, -hh - 2, 24, 10, [6, 6, 2, 2]);
+  ctx.fill();
+  // Spiky hair
+  for (let i = 0; i < 4; i++) {
+    ctx.beginPath();
+    ctx.moveTo(-hw + 6 + i * 5, -hh - 2);
+    ctx.lineTo(-hw + 8 + i * 5, -hh - 8);
+    ctx.lineTo(-hw + 10 + i * 5, -hh - 2);
+    ctx.fillStyle = '#4a2800';
+    ctx.fill();
+  }
+
+  // Eyes
+  ctx.fillStyle = '#1a1a2e';
+  ctx.beginPath(); ctx.arc(-hw + 13, -hh + 9, 2.5, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(-hw + 20, -hh + 9, 2.5, 0, Math.PI*2); ctx.fill();
+  // Eye shine
+  ctx.fillStyle = 'white';
+  ctx.beginPath(); ctx.arc(-hw + 14, -hh + 8, 1, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(-hw + 21, -hh + 8, 1, 0, Math.PI*2); ctx.fill();
+
+  // Mouth (smile when alive, O when dead)
+  ctx.strokeStyle = '#7a3f00';
+  ctx.lineWidth = 1.5;
+  if (state === 'dead') {
+    ctx.beginPath();
+    ctx.arc(-hw + 16.5, -hh + 15, 3, 0, Math.PI*2);
+    ctx.stroke();
+  } else {
+    ctx.beginPath();
+    ctx.arc(-hw + 16.5, -hh + 13, 3, 0, Math.PI);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawParticles() {
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI*2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+
+function drawScore() {
+  ctx.font = '20px "Press Start 2P"';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillText(score, W/2 + 2, 52);
+  ctx.fillStyle = '#ffe066';
+  ctx.shadowColor = '#ff9500';
+  ctx.shadowBlur = 10;
+  ctx.fillText(score, W/2, 50);
+  ctx.shadowBlur = 0;
+  ctx.textAlign = 'left';
+}
+
+function drawOverlay() {
+  if (state === 'idle') {
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+    ctx.font = '22px "Press Start 2P"';
+    ctx.fillStyle = '#ffe066';
+    ctx.shadowColor = '#ff9500';
+    ctx.shadowBlur = 15;
+    ctx.fillText('FLAPPY BOY', W/2, H/2 - 60);
+    ctx.shadowBlur = 0;
+
+    ctx.font = '10px "Press Start 2P"';
+    ctx.fillStyle = 'white';
+    ctx.fillText('CLICK TO START', W/2, H/2 + 10);
+
+    ctx.textAlign = 'left';
+  }
+
+  if (state === 'dead') {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+
+    // Panel
+    ctx.fillStyle = '#1a0a2e';
+    ctx.strokeStyle = '#ffe066';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(W/2 - 130, H/2 - 100, 260, 200, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.font = '18px "Press Start 2P"';
+    ctx.fillStyle = '#ff4444';
+    ctx.shadowColor = '#ff0000';
+    ctx.shadowBlur = 10;
+    ctx.fillText('GAME OVER', W/2, H/2 - 60);
+    ctx.shadowBlur = 0;
+
+    ctx.font = '10px "Press Start 2P"';
+    ctx.fillStyle = '#ffe066';
+    ctx.fillText('SCORE: ' + score, W/2, H/2 - 20);
+    ctx.fillText('BEST: ' + best, W/2, H/2 + 10);
+
+    ctx.font = '9px "Press Start 2P"';
+    ctx.fillStyle = 'white';
+    const t = Math.floor(Date.now() / 600) % 2 === 0;
+    if (t) ctx.fillText('CLICK TO RETRY', W/2, H/2 + 60);
+
+    ctx.textAlign = 'left';
+  }
+}
+
+function checkCollision() {
+  const bx = boy.x, by = boy.y;
+  const bw = boy.w - 4, bh = boy.h - 4;
+  const ox = 2;
+
+  if (by + bh >= H - 30 || by <= 0) return true;
+
+  for (const p of pipes) {
+    if (bx + bw + ox > p.x + 4 && bx + ox < p.x + PIPE_W - 4) {
+      if (by + ox < p.gapY || by + bh - ox > p.gapY + PIPE_GAP) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+let bgOffset = 0;
+
+function loop() {
+  frameCount++;
+  bgOffset += 0.5;
+
+  ctx.clearRect(0, 0, W, H);
+  drawSky();
+  drawClouds(bgOffset);
+
+  if (state === 'playing') {
+    // Spawn pipes
+    if (frameCount % 85 === 0) spawnPipe();
+
+    // Update pipes
+    pipes.forEach(p => {
+      p.x -= PIPE_SPEED;
+      if (!p.passed && p.x + PIPE_W < boy.x) {
+        p.passed = true;
+        score++;
+        document.getElementById('scoreDisplay').textContent = score;
+        addParticles(boy.x + boy.w/2, boy.y + boy.h/2, '#ffe066');
+        if (score > best) {
+          best = score;
+          document.getElementById('bestDisplay').textContent = best;
+        }
+      }
+    });
+    pipes = pipes.filter(p => p.x + PIPE_W > -10);
+
+    // Update boy
+    boy.vy += boy.gravity;
+    boy.y += boy.vy;
+    boy.rotation = Math.min(Math.max(boy.vy * 0.06, -0.5), 1.2);
+
+    // Update particles
+    particles.forEach(p => {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.15;
+      p.life -= 0.04;
+    });
+    particles = particles.filter(p => p.life > 0);
+
+    // Check collision
+    if (checkCollision()) {
+      state = 'dead';
+      addParticles(boy.x + boy.w/2, boy.y + boy.h/2, '#ff4444');
+      addParticles(boy.x + boy.w/2, boy.y + boy.h/2, '#ff9500');
+    }
+  } else if (state === 'idle') {
+    // Idle float
+    boy.y = H/2 + Math.sin(Date.now() * 0.003) * 15;
+    boy.rotation = Math.sin(Date.now() * 0.003) * 0.1;
+  }
+
+  pipes.forEach(drawPipe);
+  drawGround();
+  drawParticles();
+  drawBoy(boy.x, boy.y, boy.rotation);
+  drawScore();
+  drawOverlay();
+
+  raf = requestAnimationFrame(loop);
+}
+
+function handleInput() {
+  if (state === 'idle') {
+    state = 'playing';
+    resetGame();
+    boy.jump();
+  } else if (state === 'playing') {
+    boy.jump();
+    addParticles(boy.x + boy.w/2, boy.y + boy.h/2, '#ffffff');
+  } else if (state === 'dead') {
+    state = 'playing';
+    resetGame();
+    boy.jump();
+  }
+}
+
+canvas.addEventListener('click', handleInput);
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    e.preventDefault();
+    handleInput();
+  }
+});
+
+loop();
+</script>
+</body>
+</html>
